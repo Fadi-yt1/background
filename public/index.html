@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClearCut — Remove image backgrounds instantly</title>
+    <meta
+      name="description"
+      content="Upload a photo and get a clean, transparent cutout in seconds. Swap in a solid colour, a gradient, or your own backdrop, then download in full resolution."
+    />
+    <meta name="theme-color" content="#4f46e5" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#studio">Skip to the editor</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="/">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 15.5 9 10l4.5 4.5" />
+              <path d="m13 13 2.5-2.5L20 15" />
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+              <circle cx="15" cy="8.5" r="1.3" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+          <span class="brand-name">ClearCut</span>
+        </a>
+
+        <nav class="site-nav" aria-label="Primary">
+          <a href="#features">Features</a>
+          <a href="#how">How it works</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+
+        <a class="button button-primary button-sm header-cta" href="#studio">Remove a background</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="shell hero-inner">
+          <p class="eyebrow">AI cutouts in seconds</p>
+          <h1>Remove the background from any image.</h1>
+          <p class="hero-lede">
+            Drop in a photo and ClearCut returns a crisp, transparent PNG — hair, edges and all.
+            Keep it transparent or drop your subject onto a new colour, gradient, or backdrop.
+          </p>
+
+          <ul class="hero-points">
+            <li>Full-resolution PNG download</li>
+            <li>Nothing is stored on our servers</li>
+            <li>No account required</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="studio" class="studio shell" aria-labelledby="studio-heading">
+        <h2 id="studio-heading" class="visually-hidden">Background remover</h2>
+
+        <!-- Step 1: choose a file -->
+        <div class="panel" id="view-upload">
+          <div
+            class="dropzone"
+            id="dropzone"
+            role="button"
+            tabindex="0"
+            aria-label="Upload an image. Drag a file here, paste from the clipboard, or press Enter to browse."
+          >
+            <div class="dropzone-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 16V4" />
+                <path d="m7.5 8.5 4.5-4.5 4.5 4.5" />
+                <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+              </svg>
+            </div>
+            <p class="dropzone-title">Drag an image here</p>
+            <p class="dropzone-sub">or <span class="link-like">browse your files</span> — you can paste with Ctrl&nbsp;+&nbsp;V too</p>
+            <p class="dropzone-meta" id="dropzone-meta">PNG, JPEG, WebP or HEIC · up to 12&nbsp;MB</p>
+            <input
+              type="file"
+              id="file-input"
+              class="visually-hidden"
+              accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
+            />
+          </div>
+
+          <p class="upload-error" id="upload-error" role="alert" hidden></p>
+        </div>
+
+        <!-- Step 2: working -->
+        <div class="panel panel-progress" id="view-progress" hidden>
+          <div class="progress-art" aria-hidden="true">
+            <div class="progress-ring"></div>
+          </div>
+          <p class="progress-title" id="progress-title">Uploading your image…</p>
+          <p class="progress-sub">This usually takes a few seconds.</p>
+          <div class="progress-track">
+            <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+          </div>
+          <button type="button" class="button button-ghost button-sm" id="cancel-button">Cancel</button>
+        </div>
+
+        <!-- Step 3: the editor -->
+        <div class="editor" id="view-editor" hidden>
+          <div class="editor-stage">
+            <div class="stage-toolbar">
+              <div class="segmented" role="group" aria-label="Preview mode">
+                <button type="button" class="segment is-active" id="tab-result" aria-pressed="true">Result</button>
+                <button type="button" class="segment" id="tab-compare" aria-pressed="false">Compare</button>
+              </div>
+              <button type="button" class="button button-ghost button-sm" id="reset-button">New image</button>
+            </div>
+
+            <div class="stage" id="stage">
+              <div class="stage-canvas-wrap">
+                <canvas id="preview-canvas" aria-label="Your image with the background removed"></canvas>
+              </div>
+
+              <div class="compare" id="compare" hidden>
+                <img id="compare-original" alt="The original image before the background was removed" />
+                <div class="compare-result" id="compare-result">
+                  <canvas id="compare-canvas" aria-hidden="true"></canvas>
+                </div>
+                <span class="compare-label compare-label-before">Before</span>
+                <span class="compare-label compare-label-after">After</span>
+                <input
+                  type="range"
+                  class="compare-slider"
+                  id="compare-slider"
+                  min="0"
+                  max="100"
+                  value="50"
+                  aria-label="Compare original and cutout"
+                />
+                <span class="compare-handle" id="compare-handle" aria-hidden="true"></span>
+              </div>
+            </div>
+          </div>
+
+          <aside class="editor-panel" aria-label="Background options">
+            <div class="field">
+              <h3 class="field-title">Background</h3>
+              <div class="swatches" id="swatches" role="radiogroup" aria-label="Background style"></div>
+            </div>
+
+            <div class="field">
+              <label class="field-title" for="custom-color">Custom colour</label>
+              <div class="color-row">
+                <input type="color" id="custom-color" value="#4f46e5" />
+                <input type="text" id="custom-hex" class="text-input" value="#4F46E5" spellcheck="false" aria-label="Hex colour value" />
+              </div>
+            </div>
+
+            <div class="field">
+              <h3 class="field-title">Your own backdrop</h3>
+              <button type="button" class="button button-outline button-block" id="bg-upload-button">
+                Choose an image
+              </button>
+              <input
+                type="file"
+                id="bg-file-input"
+                class="visually-hidden"
+                accept="image/png,image/jpeg,image/webp"
+              />
+              <button type="button" class="button button-ghost button-block" id="bg-clear-button" hidden>
+                Remove backdrop
+              </button>
+            </div>
+
+            <div class="field">
+              <h3 class="field-title">Download</h3>
+              <p class="field-note" id="download-note">Transparent PNG · full resolution</p>
+              <button type="button" class="button button-primary button-block" id="download-button">
+                Download PNG
+              </button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="features" class="section shell" aria-labelledby="features-heading">
+        <h2 id="features-heading">Built for clean edges</h2>
+        <p class="section-lede">
+          The hard part of a cutout is the last two per cent — strands of hair, glass, shadow edges.
+          ClearCut leans on a production segmentation model so those hold up at full size.
+        </p>
+
+        <div class="cards">
+          <article class="card">
+            <h3>Edge-accurate masks</h3>
+            <p>Fine detail survives the cut: flyaway hair, fur, thin straps and semi-transparent fabric.</p>
+          </article>
+          <article class="card">
+            <h3>Backgrounds that fit</h3>
+            <p>Swap to a solid colour, a curated gradient, or your own image, and see it composite live.</p>
+          </article>
+          <article class="card">
+            <h3>Original resolution</h3>
+            <p>The cutout comes back at the size you uploaded — no downscaling and no watermark.</p>
+          </article>
+          <article class="card">
+            <h3>Private by design</h3>
+            <p>Images are processed in memory and discarded the moment your download is ready.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="how" class="section shell" aria-labelledby="how-heading">
+        <h2 id="how-heading">Three steps, about ten seconds</h2>
+        <ol class="steps">
+          <li>
+            <span class="step-number">1</span>
+            <h3>Upload</h3>
+            <p>Drag a photo in, browse for it, or paste from your clipboard.</p>
+          </li>
+          <li>
+            <span class="step-number">2</span>
+            <h3>Choose a background</h3>
+            <p>Keep it transparent, or try a colour, gradient, or your own backdrop.</p>
+          </li>
+          <li>
+            <span class="step-number">3</span>
+            <h3>Download</h3>
+            <p>Save a full-resolution PNG, ready for a store listing, deck, or print.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="faq" class="section shell" aria-labelledby="faq-heading">
+        <h2 id="faq-heading">Questions</h2>
+        <div class="faq">
+          <details>
+            <summary>What happens to my images?</summary>
+            <p>
+              Your upload is held in server memory only long enough to produce the cutout, then dropped.
+              Nothing is written to disk, and no copy is kept after the response is sent.
+            </p>
+          </details>
+          <details>
+            <summary>Which file types work?</summary>
+            <p>PNG, JPEG, WebP and HEIC, up to 12&nbsp;MB. The result is always a transparent PNG.</p>
+          </details>
+          <details>
+            <summary>Will the download be watermarked?</summary>
+            <p>
+              No. When the site runs against a live API key the cutout is clean and full-resolution.
+              A sandbox key — used for testing — returns a watermarked preview instead.
+            </p>
+          </details>
+          <details>
+            <summary>Can I put my subject on a new background?</summary>
+            <p>
+              Yes. Pick a colour or gradient, or upload your own image; compositing happens right in
+              your browser, so switching backdrops is instant and costs nothing extra.
+            </p>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <p class="footer-brand">ClearCut</p>
+        <p class="footer-note">Background removal powered by the PhotoRoom API.</p>
+      </div>
+    </footer>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

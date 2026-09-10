@@ -1,0 +1,23 @@
+# ClearCut on Netlify: the front end is static, the cutout endpoint is a
+# function. Routes for the functions are declared in the function files
+# themselves (`export const config = { path: … }`).
+
+[build]
+  publish = "public"
+  command = "npm test"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # The functions import the shared modules in lib/, which live outside the
+  # functions directory, so they have to be bundled explicitly.
+  included_files = ["lib/**"]
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Content-Security-Policy = "default-src 'self'; img-src 'self' blob: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
