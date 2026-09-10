@@ -97,8 +97,8 @@ with the key attached, retrying transient upstream failures (429/5xx) twice with
 backoff. The response is the transparent PNG, sent straight back.
 
 `lib/cutout.js` holds that logic with no framework around it, so the Express
-server and the serverless function share one implementation of the validation
-and the credential handling rather than two that can drift apart.
+server and the Netlify function share one implementation of the validation and
+the credential handling rather than two that can drift apart.
 
 Everything after that happens in the browser on a `<canvas>`: colours,
 gradients, custom backdrops, the before/after slider, and the download are all
@@ -108,15 +108,15 @@ local, so switching backgrounds is instant and costs no extra API calls.
 
 ```
 server.js            Express app for local dev and self-hosting
-api/                 Vercel serverless entry points (remove-background, health)
+netlify/functions/   Netlify functions (cutout, health)
 lib/cutout.js        Framework-free request core, shared by both entry points
 lib/secure-store.js  AES-256-GCM seal/open, fingerprinting, secret redaction
 lib/config.js        Resolves and decrypts configuration at boot
 lib/photoroom.js     The only place the key touches an outbound request
 scripts/encrypt-key.js  CLI that turns a key into an .env blob
 public/              Static front-end (no build step, no dependencies)
-test/app.test.js     Crypto, config, server, and serverless-handler tests
-vercel.json          Function limits and security headers for the deployment
+test/app.test.js     Crypto, config, server, and function tests
+netlify.toml         Publish directory, functions directory, security headers
 ```
 
 ## Tests
@@ -131,33 +131,42 @@ appears in neither the served assets, the response headers, nor an error body
 when the upstream echoes it back. The suite runs against a mock upstream, so it
 needs no network and spends no API credits.
 
-## Deploying to Vercel
+## Deploying to Netlify
 
-Vercel serves `public/` as the site and mounts `api/*.js` as functions, so the
-repo deploys as-is:
+Netlify serves `public/` as the site and mounts `netlify/functions/` as
+functions, so the repo deploys as-is. Each function declares its own public
+route (`export const config = { path: '/api/...' }`), which is why there are no
+redirects in `netlify.toml`.
 
 ```bash
-npm i -g vercel
-vercel link
-vercel env add KEY_ENCRYPTION_SECRET production   # paste the passphrase
-vercel env add PHOTOROOM_API_KEY_ENC production   # paste the encrypted blob
-vercel --prod
+npm i -g netlify-cli
+netlify link                                   # or `netlify init` for a new site
+netlify env:set KEY_ENCRYPTION_SECRET "…"      # the passphrase
+netlify env:set PHOTOROOM_API_KEY_ENC "…"      # the encrypted blob
+netlify deploy --prod
 ```
 
-Add the same two variables to the `preview` environment if you want preview
-deployments to work, and `PHOTOROOM_SANDBOX_API_KEY_ENC` plus
-`PHOTOROOM_MODE=sandbox` if you want previews to run on the free sandbox key.
+Add `PHOTOROOM_SANDBOX_API_KEY_ENC` and `PHOTOROOM_MODE=sandbox` if you want
+deploy previews to run on the free sandbox key.
 
-Two things behave differently there than when self-hosting:
+Three things behave differently there than when self-hosting:
 
-- **Uploads are capped at 4 MB.** Vercel rejects serverless request bodies over
-  about 4.5 MB before the function runs, so `lib/config.js` caps the advertised
-  limit when `VERCEL` is set. The browser reads the real limit from
-  `/api/health`, so the dropzone and its error messages stay accurate.
+- **Uploads are capped at 4 MB.** Netlify limits synchronous function payloads
+  to 6 MB, so `lib/config.js` caps the advertised limit when `NETLIFY` is set.
+  The browser reads the real limit from `/api/health`, so the dropzone and its
+  error messages stay accurate.
+- **Very large cutouts are refused.** That 6 MB cap applies to the response too,
+  and a transparent PNG of a big photo can exceed it. The function checks the
+  result size and returns a clear message rather than letting the platform fail
+  the request. If you need to lift this, have the function write the cutout to
+  Netlify Blobs and return a URL instead of the bytes.
 - **Rate limiting does not apply.** `express-rate-limit` lives in `server.js`,
-  which Vercel does not run, and an in-memory limiter would not hold across
-  instances anyway. Use Vercel's own firewall/rate-limiting if you need it on a
-  public deployment.
+  which Netlify does not run, and an in-memory limiter would not hold across
+  instances anyway. Use Netlify's own rate limiting if you need it.
+
+Do not name a function file with a `-background` suffix. Netlify treats those as
+background functions: they return an empty `202` immediately and throw the
+response away, which silently breaks the endpoint. A test guards against this.
 
 GitHub Pages cannot host this app. Pages serves static files only, so there is
 no process to hold the key or call PhotoRoom; the only way to make it work there

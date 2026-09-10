@@ -8,6 +8,15 @@ const { seal, open, redact } = require('../lib/secure-store');
 const { loadConfig } = require('../lib/config');
 const { createApp } = require('../server');
 
+// Requiring server.js above ran dotenv, so a developer's real .env is now in
+// process.env. Strip it: every test must supply its own configuration, and the
+// suite has to behave the same here as it does in CI, where no .env exists.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('PHOTOROOM_') || key === 'KEY_ENCRYPTION_SECRET') {
+    delete process.env[key];
+  }
+}
+
 const PASSPHRASE = 'a-passphrase-of-sufficient-length';
 const LIVE_KEY = 'sk_pr_test_live_0123456789';
 const SANDBOX_KEY = 'sandbox_sk_pr_test_0123456789';
@@ -276,106 +285,113 @@ test('security headers are set on the page', async (t) => {
   assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
 });
 
-/* --------------------------------------------------- serverless entry point */
+/* ------------------------------------------------------ netlify functions */
 
-/**
- * Runs the Vercel handler against a real HTTP server, so it receives a genuine
- * request stream. `res` is shimmed with the helpers Vercel adds to Node's
- * response object.
- */
-async function startFunction(handler, env) {
-  const server = http.createServer((req, res) => {
-    res.status = (code) => {
-      res.statusCode = code;
-      return res;
-    };
-    res.json = (payload) => {
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify(payload));
-      return res;
-    };
-    res.send = (payload) => {
-      res.end(payload);
-      return res;
-    };
-    Object.assign(process.env, env);
-    Promise.resolve(handler(req, res)).catch((error) => {
-      res.statusCode = 500;
-      res.end(String(error));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { base: `http://127.0.0.1:${server.address().port}`, server };
+const fsp = require('node:fs');
+
+/** Imports a function module fresh, so its cached config does not leak between tests. */
+let importCounter = 0;
+function loadFunction(name) {
+  importCounter += 1;
+  return import(`../netlify/functions/${name}.mjs?v=${importCounter}`);
 }
 
-test('the serverless handler returns a cutout and hides the key', async (t) => {
+test('the netlify function returns a cutout and keeps the key server-side', async (t) => {
   const upstream = await startUpstream((req, res) => {
     res.writeHead(200, { 'content-type': 'image/png' });
     res.end(PNG);
   });
+  t.after(() => upstream.server.close());
 
   const env = {
     KEY_ENCRYPTION_SECRET: PASSPHRASE,
     PHOTOROOM_API_KEY_ENC: seal(LIVE_KEY, PASSPHRASE),
     PHOTOROOM_API_URL: upstream.url,
   };
-  // Loaded after the environment is set, since the module caches its config.
-  delete require.cache[require.resolve('../api/remove-background')];
   Object.assign(process.env, env);
-  const handler = require('../api/remove-background');
-  const fn = await startFunction(handler, env);
-
   t.after(() => {
-    fn.server.close();
-    upstream.server.close();
     for (const key of Object.keys(env)) delete process.env[key];
-    delete require.cache[require.resolve('../api/remove-background')];
   });
 
-  const response = await fetch(`${fn.base}/api/remove-background`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'image/png', 'X-File-Name': 'photo.png' },
-    body: PNG,
-  });
+  const { default: handler } = await loadFunction('cutout');
+  const response = await handler(
+    new Request('https://example.test/api/remove-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png', 'X-File-Name': 'photo.png' },
+      body: PNG,
+    })
+  );
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.equal(Buffer.from(await response.arrayBuffer()).length, PNG.length);
   assert.equal(upstream.received[0].headers['x-api-key'], LIVE_KEY);
   assert.ok(!JSON.stringify([...response.headers]).includes(LIVE_KEY));
 });
 
-test('the serverless handler rejects a GET', async (t) => {
-  const handler = require('../api/remove-background');
-  const fn = await startFunction(handler, {});
-  t.after(() => fn.server.close());
-
-  const response = await fetch(`${fn.base}/api/remove-background`);
+test('the netlify function rejects a GET', async () => {
+  const { default: handler } = await loadFunction('cutout');
+  const response = await handler(new Request('https://example.test/api/remove-background'));
   assert.equal(response.status, 405);
   assert.equal(response.headers.get('allow'), 'POST');
 });
 
-test('the serverless handler refuses a non-image body', async (t) => {
+test('the netlify function refuses a non-image body', async (t) => {
   const env = {
     KEY_ENCRYPTION_SECRET: PASSPHRASE,
     PHOTOROOM_API_KEY_ENC: seal(LIVE_KEY, PASSPHRASE),
   };
-  delete require.cache[require.resolve('../api/remove-background')];
   Object.assign(process.env, env);
-  const handler = require('../api/remove-background');
-  const fn = await startFunction(handler, env);
-
   t.after(() => {
-    fn.server.close();
     for (const key of Object.keys(env)) delete process.env[key];
-    delete require.cache[require.resolve('../api/remove-background')];
   });
 
-  const response = await fetch(`${fn.base}/api/remove-background`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: 'not an image',
-  });
+  const { default: handler } = await loadFunction('cutout');
+  const response = await handler(
+    new Request('https://example.test/api/remove-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'not an image',
+    })
+  );
   assert.equal(response.status, 415);
+});
+
+test('the netlify function says so when no key is configured', async () => {
+  const { default: handler } = await loadFunction('cutout');
+  const response = await handler(
+    new Request('https://example.test/api/remove-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png' },
+      body: PNG,
+    })
+  );
+  assert.equal(response.status, 500);
+  const body = await response.json();
+  assert.match(body.error, /not configured/);
+  // The message must not name the variables it is missing.
+  assert.ok(!body.error.includes('PHOTOROOM'));
+});
+
+test('health reports limits without credentials', async (t) => {
+  const env = { PHOTOROOM_API_KEY: LIVE_KEY };
+  Object.assign(process.env, env);
+  t.after(() => {
+    for (const key of Object.keys(env)) delete process.env[key];
+  });
+
+  const { default: handler } = await loadFunction('health');
+  const payload = await (await handler()).json();
+  assert.deepEqual(Object.keys(payload).sort(), ['maxUploadBytes', 'mode', 'status']);
+});
+
+test('no function is named so that Netlify treats it as a background function', () => {
+  // A `-background` suffix makes Netlify return an empty 202 and discard the
+  // response, which silently breaks the endpoint.
+  for (const file of fsp.readdirSync(`${__dirname}/../netlify/functions`)) {
+    const name = file.replace(/\.[^.]+$/, '');
+    assert.ok(!name.endsWith('-background'), `${file} would be run as a background function`);
+  }
 });
 
 /* ------------------------------------------------------------ upload limits */
