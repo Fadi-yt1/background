@@ -164,6 +164,15 @@ Three things behave differently there than when self-hosting:
   which Netlify does not run, and an in-memory limiter would not hold across
   instances anyway. Use Netlify's own rate limiting if you need it.
 
+If the site reports "This site is not configured yet", open `/api/health`: it
+returns the reason — which variable is missing, or that the passphrase does not
+match the blob — naming variables but never values.
+
+Set the variables as **secret** if you like, but note that Netlify omits secret
+values from `Netlify.env.toObject()` while still serving them through
+`Netlify.env.get()`. `lib/runtime-env.js` reads both, plus `process.env`, so a
+correctly configured site cannot report itself unconfigured on that account.
+
 Do not name a function file with a `-background` suffix. Netlify treats those as
 background functions: they return an empty `202` immediately and throw the
 response away, which silently breaks the endpoint. A test guards against this.

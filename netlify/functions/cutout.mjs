@@ -14,8 +14,10 @@ import configModule from '../../lib/config.js';
 import cutoutModule from '../../lib/cutout.js';
 import photoroomModule from '../../lib/photoroom.js';
 import secureStoreModule from '../../lib/secure-store.js';
+import runtimeEnvModule from '../../lib/runtime-env.js';
 
 const { loadConfig } = configModule;
+const { readEnv } = runtimeEnvModule;
 const { cutout } = cutoutModule;
 const { PhotoRoomError } = photoroomModule;
 const { redact } = secureStoreModule;
@@ -25,10 +27,6 @@ const { redact } = secureStoreModule;
 const MAX_RESPONSE_BYTES = 5.5 * 1024 * 1024;
 
 let cachedConfig;
-
-function readEnv() {
-  return typeof Netlify === 'undefined' ? process.env : Netlify.env.toObject();
-}
 
 function getConfig() {
   if (!cachedConfig) cachedConfig = loadConfig(readEnv());

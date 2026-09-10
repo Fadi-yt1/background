@@ -432,3 +432,88 @@ test('a broken active key does stop startup', () => {
     /Unable to decrypt/
   );
 });
+
+/* ---------------------------------------------------------- runtime env */
+
+const { readEnv, describeConfigProblem } = require('../lib/runtime-env');
+
+test('readEnv falls back to process.env when the platform global is absent', () => {
+  process.env.PHOTOROOM_MODE = 'sandbox';
+  try {
+    assert.equal(readEnv().PHOTOROOM_MODE, 'sandbox');
+  } finally {
+    delete process.env.PHOTOROOM_MODE;
+  }
+});
+
+test('readEnv finds a value the platform hides from toObject', () => {
+  // Netlify omits variables marked secret from toObject() but still serves
+  // them through get(), which is exactly how a configured site reported
+  // itself unconfigured.
+  globalThis.Netlify = {
+    env: {
+      toObject: () => ({ PHOTOROOM_MODE: 'live' }),
+      get: (key) => (key === 'PHOTOROOM_API_KEY_ENC' ? 'sealed-blob' : undefined),
+    },
+  };
+  try {
+    const env = readEnv();
+    assert.equal(env.PHOTOROOM_MODE, 'live');
+    assert.equal(env.PHOTOROOM_API_KEY_ENC, 'sealed-blob', 'secret-scoped value must be picked up');
+  } finally {
+    delete globalThis.Netlify;
+  }
+});
+
+test('readEnv ignores an empty platform value rather than masking process.env', () => {
+  process.env.KEY_ENCRYPTION_SECRET = PASSPHRASE;
+  globalThis.Netlify = { env: { toObject: () => ({}), get: () => '' } };
+  try {
+    assert.equal(readEnv().KEY_ENCRYPTION_SECRET, PASSPHRASE);
+  } finally {
+    delete globalThis.Netlify;
+    delete process.env.KEY_ENCRYPTION_SECRET;
+  }
+});
+
+test('config problems are described without revealing any value', () => {
+  const sealed = seal(LIVE_KEY, PASSPHRASE);
+
+  assert.match(describeConfigProblem({}, new Error('x')), /No PhotoRoom key is set/);
+  assert.match(
+    describeConfigProblem({ PHOTOROOM_API_KEY_ENC: sealed }, new Error('x')),
+    /KEY_ENCRYPTION_SECRET is missing/
+  );
+
+  const wrongPassphrase = describeConfigProblem(
+    { PHOTOROOM_API_KEY_ENC: sealed, KEY_ENCRYPTION_SECRET: 'wrong-but-long-enough' },
+    new Error('Unable to decrypt the API key.')
+  );
+  assert.match(wrongPassphrase, /does not match/);
+
+  for (const message of [
+    describeConfigProblem({ PHOTOROOM_API_KEY_ENC: sealed, KEY_ENCRYPTION_SECRET: PASSPHRASE }, new Error('x')),
+    wrongPassphrase,
+  ]) {
+    assert.ok(!message.includes(sealed) && !message.includes(PASSPHRASE) && !message.includes(LIVE_KEY));
+  }
+});
+
+test('health names the missing variable so a deployment can be fixed', async (t) => {
+  t.after(() => {
+    delete process.env.PHOTOROOM_API_KEY_ENC;
+  });
+
+  const { default: unconfigured } = await loadFunction('health');
+  const missingEverything = await unconfigured();
+  assert.equal(missingEverything.status, 503);
+  assert.match((await missingEverything.json()).reason, /No PhotoRoom key is set/);
+
+  process.env.PHOTOROOM_API_KEY_ENC = seal(LIVE_KEY, PASSPHRASE);
+  const { default: missingPassphrase } = await loadFunction('health');
+  const response = await missingPassphrase();
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.match(body.reason, /KEY_ENCRYPTION_SECRET is missing/);
+  assert.ok(!JSON.stringify(body).includes(LIVE_KEY), 'health must not echo any key material');
+});
