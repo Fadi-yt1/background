@@ -1,35 +1,43 @@
 /**
  * Reports the limits the front end needs, and whether the deployment has a
- * usable key. It deliberately says nothing about the key itself.
+ * usable key.
+ *
+ * When configuration is missing it names which variable is absent — never a
+ * value — so an operator can fix a deployment without digging through function
+ * logs. The cutout endpoint stays vague with visitors; this is the diagnostic.
  */
 
 import configModule from '../../lib/config.js';
+import runtimeEnvModule from '../../lib/runtime-env.js';
 
 const { loadConfig } = configModule;
+const { readEnv, describeConfigProblem } = runtimeEnvModule;
 
 let cachedConfig;
 
-function readEnv() {
-  return typeof Netlify === 'undefined' ? process.env : Netlify.env.toObject();
+function json(payload, status) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
 }
 
 export default async function handler() {
+  const env = readEnv();
+
   try {
-    if (!cachedConfig) cachedConfig = loadConfig(readEnv());
-  } catch {
-    return new Response(JSON.stringify({ status: 'unconfigured' }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-    });
+    if (!cachedConfig) cachedConfig = loadConfig(env);
+  } catch (error) {
+    return json({ status: 'unconfigured', reason: describeConfigProblem(env, error) }, 503);
   }
 
-  return new Response(
-    JSON.stringify({
+  return json(
+    {
       status: 'ok',
       mode: cachedConfig.mode,
       maxUploadBytes: cachedConfig.maxUploadBytes,
-    }),
-    { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } }
+    },
+    200
   );
 }
 
