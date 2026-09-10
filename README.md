@@ -90,10 +90,15 @@ returns clean cutouts.
 
 ## How it works
 
-`POST /api/remove-background` takes one `image` field (multipart). Multer holds
-it in memory — nothing is written to disk — and the server forwards it to
-PhotoRoom with the key attached, retrying transient upstream failures (429/5xx)
-twice with backoff. The response is the transparent PNG, streamed straight back.
+`POST /api/remove-background` takes the image as the raw request body, with its
+MIME type in `Content-Type` and the original name in `X-File-Name`. The bytes
+are held in memory — nothing is written to disk — and forwarded to PhotoRoom
+with the key attached, retrying transient upstream failures (429/5xx) twice with
+backoff. The response is the transparent PNG, sent straight back.
+
+`lib/cutout.js` holds that logic with no framework around it, so the Express
+server and the serverless function share one implementation of the validation
+and the credential handling rather than two that can drift apart.
 
 Everything after that happens in the browser on a `<canvas>`: colours,
 gradients, custom backdrops, the before/after slider, and the download are all
@@ -102,13 +107,16 @@ local, so switching backgrounds is instant and costs no extra API calls.
 ## Layout
 
 ```
-server.js            Express app: routing, validation, security headers, error shaping
+server.js            Express app for local dev and self-hosting
+api/                 Vercel serverless entry points (remove-background, health)
+lib/cutout.js        Framework-free request core, shared by both entry points
 lib/secure-store.js  AES-256-GCM seal/open, fingerprinting, secret redaction
 lib/config.js        Resolves and decrypts configuration at boot
 lib/photoroom.js     The only place the key touches an outbound request
 scripts/encrypt-key.js  CLI that turns a key into an .env blob
 public/              Static front-end (no build step, no dependencies)
-test/app.test.js     Crypto, config, and server tests
+test/app.test.js     Crypto, config, server, and serverless-handler tests
+vercel.json          Function limits and security headers for the deployment
 ```
 
 ## Tests
@@ -123,8 +131,41 @@ appears in neither the served assets, the response headers, nor an error body
 when the upstream echoes it back. The suite runs against a mock upstream, so it
 needs no network and spends no API credits.
 
-## Deploying
+## Deploying to Vercel
 
-Any Node host works. Set `KEY_ENCRYPTION_SECRET` through the platform's secret
-manager rather than in a deployed file, terminate TLS in front of the app, and
-keep `trust proxy` accurate so the rate limiter sees real client IPs.
+Vercel serves `public/` as the site and mounts `api/*.js` as functions, so the
+repo deploys as-is:
+
+```bash
+npm i -g vercel
+vercel link
+vercel env add KEY_ENCRYPTION_SECRET production   # paste the passphrase
+vercel env add PHOTOROOM_API_KEY_ENC production   # paste the encrypted blob
+vercel --prod
+```
+
+Add the same two variables to the `preview` environment if you want preview
+deployments to work, and `PHOTOROOM_SANDBOX_API_KEY_ENC` plus
+`PHOTOROOM_MODE=sandbox` if you want previews to run on the free sandbox key.
+
+Two things behave differently there than when self-hosting:
+
+- **Uploads are capped at 4 MB.** Vercel rejects serverless request bodies over
+  about 4.5 MB before the function runs, so `lib/config.js` caps the advertised
+  limit when `VERCEL` is set. The browser reads the real limit from
+  `/api/health`, so the dropzone and its error messages stay accurate.
+- **Rate limiting does not apply.** `express-rate-limit` lives in `server.js`,
+  which Vercel does not run, and an in-memory limiter would not hold across
+  instances anyway. Use Vercel's own firewall/rate-limiting if you need it on a
+  public deployment.
+
+GitHub Pages cannot host this app. Pages serves static files only, so there is
+no process to hold the key or call PhotoRoom; the only way to make it work there
+would be to ship the key to the browser, which defeats the point.
+
+## Deploying anywhere else
+
+Any Node host runs `npm start` as-is. Set `KEY_ENCRYPTION_SECRET` through the
+platform's secret manager rather than in a deployed file, terminate TLS in front
+of the app, and keep `trust proxy` accurate so the rate limiter sees real client
+IPs.

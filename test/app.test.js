@@ -114,9 +114,11 @@ async function startApp(upstreamUrl, overrides = {}) {
 }
 
 function upload(base, { bytes = PNG, type = 'image/png', name = 'photo.png' } = {}) {
-  const form = new FormData();
-  form.append('image', new Blob([bytes], { type }), name);
-  return fetch(`${base}/api/remove-background`, { method: 'POST', body: form });
+  return fetch(`${base}/api/remove-background`, {
+    method: 'POST',
+    headers: { 'Content-Type': type, 'X-File-Name': name },
+    body: bytes,
+  });
 }
 
 test('a successful cutout is proxied back to the browser', async (t) => {
@@ -218,7 +220,10 @@ test('a request with no file is rejected', async (t) => {
     upstream.server.close();
   });
 
-  const response = await fetch(`${app.base}/api/remove-background`, { method: 'POST', body: new FormData() });
+  const response = await fetch(`${app.base}/api/remove-background`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+  });
   assert.equal(response.status, 400);
 });
 
@@ -269,4 +274,145 @@ test('security headers are set on the page', async (t) => {
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(response.headers.get('x-frame-options'), 'DENY');
   assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
+});
+
+/* --------------------------------------------------- serverless entry point */
+
+/**
+ * Runs the Vercel handler against a real HTTP server, so it receives a genuine
+ * request stream. `res` is shimmed with the helpers Vercel adds to Node's
+ * response object.
+ */
+async function startFunction(handler, env) {
+  const server = http.createServer((req, res) => {
+    res.status = (code) => {
+      res.statusCode = code;
+      return res;
+    };
+    res.json = (payload) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(payload));
+      return res;
+    };
+    res.send = (payload) => {
+      res.end(payload);
+      return res;
+    };
+    Object.assign(process.env, env);
+    Promise.resolve(handler(req, res)).catch((error) => {
+      res.statusCode = 500;
+      res.end(String(error));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { base: `http://127.0.0.1:${server.address().port}`, server };
+}
+
+test('the serverless handler returns a cutout and hides the key', async (t) => {
+  const upstream = await startUpstream((req, res) => {
+    res.writeHead(200, { 'content-type': 'image/png' });
+    res.end(PNG);
+  });
+
+  const env = {
+    KEY_ENCRYPTION_SECRET: PASSPHRASE,
+    PHOTOROOM_API_KEY_ENC: seal(LIVE_KEY, PASSPHRASE),
+    PHOTOROOM_API_URL: upstream.url,
+  };
+  // Loaded after the environment is set, since the module caches its config.
+  delete require.cache[require.resolve('../api/remove-background')];
+  Object.assign(process.env, env);
+  const handler = require('../api/remove-background');
+  const fn = await startFunction(handler, env);
+
+  t.after(() => {
+    fn.server.close();
+    upstream.server.close();
+    for (const key of Object.keys(env)) delete process.env[key];
+    delete require.cache[require.resolve('../api/remove-background')];
+  });
+
+  const response = await fetch(`${fn.base}/api/remove-background`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png', 'X-File-Name': 'photo.png' },
+    body: PNG,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.equal(upstream.received[0].headers['x-api-key'], LIVE_KEY);
+  assert.ok(!JSON.stringify([...response.headers]).includes(LIVE_KEY));
+});
+
+test('the serverless handler rejects a GET', async (t) => {
+  const handler = require('../api/remove-background');
+  const fn = await startFunction(handler, {});
+  t.after(() => fn.server.close());
+
+  const response = await fetch(`${fn.base}/api/remove-background`);
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get('allow'), 'POST');
+});
+
+test('the serverless handler refuses a non-image body', async (t) => {
+  const env = {
+    KEY_ENCRYPTION_SECRET: PASSPHRASE,
+    PHOTOROOM_API_KEY_ENC: seal(LIVE_KEY, PASSPHRASE),
+  };
+  delete require.cache[require.resolve('../api/remove-background')];
+  Object.assign(process.env, env);
+  const handler = require('../api/remove-background');
+  const fn = await startFunction(handler, env);
+
+  t.after(() => {
+    fn.server.close();
+    for (const key of Object.keys(env)) delete process.env[key];
+    delete require.cache[require.resolve('../api/remove-background')];
+  });
+
+  const response = await fetch(`${fn.base}/api/remove-background`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: 'not an image',
+  });
+  assert.equal(response.status, 415);
+});
+
+/* ------------------------------------------------------------ upload limits */
+
+test('the advertised upload limit stays under Vercel body cap', () => {
+  const { resolveUploadLimit } = require('../lib/config');
+  assert.equal(resolveUploadLimit({}), 12 * 1024 * 1024);
+  assert.equal(resolveUploadLimit({ VERCEL: '1' }), 4 * 1024 * 1024);
+  // An explicit request below the cap is honoured as-is.
+  assert.equal(resolveUploadLimit({ VERCEL: '1', MAX_UPLOAD_MB: '2' }), 2 * 1024 * 1024);
+});
+
+test('filenames from headers are stripped of paths', () => {
+  const { safeFilename } = require('../lib/cutout');
+  assert.equal(safeFilename('../../etc/passwd'), 'passwd');
+  assert.equal(safeFilename('C:\\Users\\me\\photo.png'), 'photo.png');
+  assert.equal(safeFilename(undefined), 'upload.png');
+});
+
+test('a broken inactive key does not stop startup', () => {
+  // Live mode with a sandbox blob sealed under a different passphrase.
+  const config = loadConfig({
+    KEY_ENCRYPTION_SECRET: PASSPHRASE,
+    PHOTOROOM_API_KEY_ENC: seal(LIVE_KEY, PASSPHRASE),
+    PHOTOROOM_SANDBOX_API_KEY_ENC: seal(SANDBOX_KEY, 'a-completely-different-passphrase'),
+  });
+  assert.equal(config.apiKey, LIVE_KEY);
+  assert.deepEqual(config.allSecrets, [LIVE_KEY]);
+});
+
+test('a broken active key does stop startup', () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        KEY_ENCRYPTION_SECRET: PASSPHRASE,
+        PHOTOROOM_API_KEY_ENC: seal(LIVE_KEY, 'a-completely-different-passphrase'),
+      }),
+    /Unable to decrypt/
+  );
 });

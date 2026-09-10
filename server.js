@@ -4,14 +4,12 @@ require('dotenv').config();
 
 const path = require('path');
 const express = require('express');
-const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 
 const { loadConfig } = require('./lib/config');
-const { removeBackground, PhotoRoomError } = require('./lib/photoroom');
+const { cutout } = require('./lib/cutout');
+const { PhotoRoomError } = require('./lib/photoroom');
 const { redact } = require('./lib/secure-store');
-
-const ACCEPTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']);
 
 function createApp(config) {
   const app = express();
@@ -40,16 +38,13 @@ function createApp(config) {
     next();
   });
 
-  const upload = multer({
-    storage: multer.memoryStorage(), // Uploads stay in RAM; nothing touches disk.
-    limits: { fileSize: config.maxUploadBytes, files: 1 },
-    fileFilter(req, file, done) {
-      if (!ACCEPTED_TYPES.has(file.mimetype)) {
-        done(new PhotoRoomError('Please upload a PNG, JPEG, WebP, or HEIC image.', { status: 415 }));
-        return;
-      }
-      done(null, true);
-    },
+  // The image arrives as a raw body rather than multipart, which is what the
+  // serverless entry point receives too. Uploads stay in RAM; nothing hits disk.
+  // Every content type is buffered so that `cutout` — shared with the
+  // serverless entry point — is the single place that decides what is valid.
+  const readImage = express.raw({
+    type: () => true,
+    limit: config.maxUploadBytes,
   });
 
   const limiter = rateLimit({
@@ -65,15 +60,9 @@ function createApp(config) {
     res.json({ status: 'ok', mode: config.mode, maxUploadBytes: config.maxUploadBytes });
   });
 
-  app.post('/api/remove-background', limiter, (req, res, next) => {
-    upload.single('image')(req, res, (uploadError) => {
-      if (uploadError) return next(uploadError);
-      if (!req.file) {
-        return next(new PhotoRoomError('No image was uploaded.', { status: 400 }));
-      }
-      return handleRemoval(req, res, next, config);
-    });
-  });
+  app.post('/api/remove-background', limiter, readImage, (req, res, next) =>
+    handleRemoval(req, res, next, config)
+  );
 
   app.use(
     express.static(path.join(__dirname, 'public'), {
@@ -104,10 +93,11 @@ function createApp(config) {
 async function handleRemoval(req, res, next, config) {
   const startedAt = Date.now();
   try {
-    const result = await removeBackground(req.file.buffer, req.file.originalname, config);
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const result = await cutout(body, req.headers, config);
 
     console.log(
-      `[cutout] ${req.file.mimetype} ${(req.file.size / 1024).toFixed(0)}KB -> ` +
+      `[cutout] ${req.headers['content-type']} ${(body.length / 1024).toFixed(0)}KB -> ` +
         `${(result.buffer.length / 1024).toFixed(0)}KB in ${Date.now() - startedAt}ms`
     );
 
@@ -122,13 +112,12 @@ async function handleRemoval(req, res, next, config) {
 
 function resolveStatus(error) {
   if (error instanceof PhotoRoomError) return error.status;
-  if (error.code === 'LIMIT_FILE_SIZE') return 413;
-  if (error.code && String(error.code).startsWith('LIMIT_')) return 400;
+  if (error.type === 'entity.too.large') return 413;
   return 500;
 }
 
 function resolveMessage(error, status, config) {
-  if (error.code === 'LIMIT_FILE_SIZE') {
+  if (error.type === 'entity.too.large') {
     return `That image is larger than the ${Math.round(config.maxUploadBytes / (1024 * 1024))} MB limit.`;
   }
   // PhotoRoomError messages are written for visitors and carry no upstream

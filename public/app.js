@@ -10,7 +10,9 @@
 (() => {
   'use strict';
 
-  const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+  // Overwritten by /api/health at load, since a serverless deployment caps
+  // request bodies lower than a self-hosted server does.
+  let maxUploadBytes = 12 * 1024 * 1024;
   const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
 
   const BACKGROUNDS = [
@@ -137,8 +139,9 @@
     if (!ACCEPTED_TYPES.includes(file.type)) {
       return 'That file type is not supported. Use a PNG, JPEG, WebP, or HEIC image.';
     }
-    if (file.size > MAX_UPLOAD_BYTES) {
-      return `That image is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 12 MB.`;
+    if (file.size > maxUploadBytes) {
+      const limit = Math.round(maxUploadBytes / 1024 / 1024);
+      return `That image is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is ${limit} MB.`;
     }
     return null;
   }
@@ -237,17 +240,19 @@
     }
   }
 
-  /** POSTs the file and reports real upload progress, which fetch cannot do. */
+  /**
+   * POSTs the file as a raw body and reports real upload progress, which fetch
+   * cannot do. The raw form is what the serverless deployment receives too.
+   */
   function uploadForCutout(file) {
     return new Promise((resolve, reject) => {
-      const form = new FormData();
-      form.append('image', file, file.name);
-
       const request = new XMLHttpRequest();
       state.request = request;
       request.open('POST', '/api/remove-background');
       request.responseType = 'blob';
       request.timeout = 90000;
+      request.setRequestHeader('Content-Type', file.type);
+      request.setRequestHeader('X-File-Name', asciiFilename(file.name));
 
       request.upload.addEventListener('progress', (event) => {
         if (!event.lengthComputable) return;
@@ -288,8 +293,14 @@
         reject(aborted);
       });
 
-      request.send(form);
+      request.send(file);
     });
+  }
+
+  /** Header values must be Latin-1, so non-ASCII filenames are transliterated away. */
+  function asciiFilename(name) {
+    // eslint-disable-next-line no-control-regex
+    return String(name || 'upload.png').replace(/[^\u0020-\u007e]/g, '_').slice(0, 100);
   }
 
   async function readErrorMessage(request) {
@@ -519,7 +530,9 @@
       const response = await fetch('/api/health');
       if (!response.ok) return;
       const health = await response.json();
-      const megabytes = Math.round(health.maxUploadBytes / 1024 / 1024);
+      if (!health.maxUploadBytes) return;
+      maxUploadBytes = health.maxUploadBytes;
+      const megabytes = Math.round(maxUploadBytes / 1024 / 1024);
       dom.dropzoneMeta.textContent = `PNG, JPEG, WebP or HEIC · up to ${megabytes} MB`;
       if (health.mode === 'sandbox') {
         toast('Sandbox mode: results are watermarked previews.');
